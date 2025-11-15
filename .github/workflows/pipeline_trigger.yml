@@ -1,0 +1,168 @@
+name: SageMaker Pipeline Execution
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      execution_name:
+        description: 'Custom execution name'
+        required: false
+        default: ''
+
+env:
+  AWS_REGION: us-east-1
+  PIPELINE_NAME: MachineDowntimePipeline
+
+jobs:
+  execute-pipeline:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.8'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install boto3 sagemaker pyyaml
+      
+      - name: Create/Update SageMaker Pipeline
+        run: |
+          echo "Creating/Updating SageMaker Pipeline..."
+          python pipeline/pipeline_definition.py
+      
+      - name: Start Pipeline Execution
+        id: start_pipeline
+        run: |
+          echo "Starting pipeline execution..."
+          
+          # Generate execution display name
+          if [ -z "${{ github.event.inputs.execution_name }}" ]; then
+            EXECUTION_NAME="GitHubActions-$(date +%Y%m%d-%H%M%S)"
+          else
+            EXECUTION_NAME="${{ github.event.inputs.execution_name }}"
+          fi
+          
+          echo "Execution Name: ${EXECUTION_NAME}"
+          
+          # Start pipeline execution
+          EXECUTION_ARN=$(aws sagemaker start-pipeline-execution \
+            --pipeline-name ${PIPELINE_NAME} \
+            --pipeline-execution-display-name "${EXECUTION_NAME}" \
+            --region ${AWS_REGION} \
+            --query 'PipelineExecutionArn' \
+            --output text)
+          
+          echo "Pipeline Execution ARN: ${EXECUTION_ARN}"
+          echo "execution_arn=${EXECUTION_ARN}" >> $GITHUB_OUTPUT
+          
+          # Save to environment
+          echo "EXECUTION_ARN=${EXECUTION_ARN}" >> $GITHUB_ENV
+      
+      - name: Monitor Pipeline Execution
+        run: |
+          echo "Monitoring pipeline execution..."
+          echo "Execution ARN: ${EXECUTION_ARN}"
+          
+          # Wait for pipeline to complete (with timeout)
+          MAX_WAIT_TIME=3600  # 1 hour
+          WAIT_INTERVAL=30
+          ELAPSED_TIME=0
+          
+          while [ $ELAPSED_TIME -lt $MAX_WAIT_TIME ]; do
+            # Get execution status
+            STATUS=$(aws sagemaker describe-pipeline-execution \
+              --pipeline-execution-arn ${EXECUTION_ARN} \
+              --region ${AWS_REGION} \
+              --query 'PipelineExecutionStatus' \
+              --output text)
+            
+            echo "Current Status: ${STATUS} (Elapsed: ${ELAPSED_TIME}s)"
+            
+            # Check if execution completed
+            if [ "${STATUS}" == "Succeeded" ]; then
+              echo "✓ Pipeline execution succeeded!"
+              exit 0
+            elif [ "${STATUS}" == "Failed" ] || [ "${STATUS}" == "Stopped" ]; then
+              echo "✗ Pipeline execution ${STATUS}!"
+              exit 1
+            fi
+            
+            # Wait before next check
+            sleep ${WAIT_INTERVAL}
+            ELAPSED_TIME=$((ELAPSED_TIME + WAIT_INTERVAL))
+          done
+          
+          echo "⚠ Pipeline execution timeout after ${MAX_WAIT_TIME}s"
+          exit 1
+      
+      - name: Get Model Package ARN
+        if: success()
+        run: |
+          echo "Retrieving registered model package..."
+          
+          # List latest model package
+          MODEL_PACKAGE_ARN=$(aws sagemaker list-model-packages \
+            --model-package-group-name machine-downtime-model-group \
+            --sort-by CreationTime \
+            --sort-order Descending \
+            --max-results 1 \
+            --region ${AWS_REGION} \
+            --query 'ModelPackageSummaryList[0].ModelPackageArn' \
+            --output text)
+          
+          echo "Latest Model Package ARN: ${MODEL_PACKAGE_ARN}"
+          
+          # Get model package details
+          aws sagemaker describe-model-package \
+            --model-package-name ${MODEL_PACKAGE_ARN} \
+            --region ${AWS_REGION} \
+            --query '{Status: ModelPackageStatus, ApprovalStatus: ModelApprovalStatus, Description: ModelPackageDescription}' \
+            --output table
+      
+      - name: Create Summary
+        if: always()
+        run: |
+          echo "## Pipeline Execution Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pipeline Name:** ${PIPELINE_NAME}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Execution ARN:** ${EXECUTION_ARN}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Region:** ${AWS_REGION}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered By:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. Review model metrics in SageMaker Model Registry" >> $GITHUB_STEP_SUMMARY
+          echo "2. Approve the model if metrics are satisfactory" >> $GITHUB_STEP_SUMMARY
+          echo "3. Deploy to endpoint for inference" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Notify on Failure
+        if: failure()
+        run: |
+          echo "❌ Pipeline execution failed!"
+          echo "Check logs at: https://console.aws.amazon.com/sagemaker/home?region=${AWS_REGION}#/pipelines/${PIPELINE_NAME}/executions"
+
+# Optional: Add job for automatic deployment
+# deploy-model:
+#   needs: execute-pipeline
+#   runs-on: ubuntu-latest
+#   if: success()
+#   steps:
+#     - name: Deploy Model
+#       run: |
+#         echo "Deploying model to endpoint..."
+#         # Add deployment logic here

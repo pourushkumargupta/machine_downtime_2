@@ -1,0 +1,138 @@
+# Pipeline Configuration for Machine Downtime Prediction
+# =========================================================
+
+# Pipeline Metadata
+pipeline:
+  name: MachineDowntimePipeline
+  description: "End-to-end ML pipeline for predicting machine downtime"
+  version: "1.0"
+
+# S3 Storage Paths
+s3_paths:
+  bucket: "machine-downtime-2"
+  raw_data: "s3://machine-downtime-2/raw/"
+  processed_data: "s3://machine-downtime-2/processed/"
+  model_artifacts: "s3://machine-downtime-2/model-artifacts/"
+  evaluation: "s3://machine-downtime-2/evaluation/"
+  input_dataset: "s3://machine-downtime-2/Machine_downtime_cleaned.csv"
+  logs: "s3://machine-downtime-2/logs/"
+
+# Model Registry Configuration
+model_registry:
+  model_group_name: "machine-downtime-model-group"
+  approval_status: "PendingManualApproval"
+  model_description: "RandomForest classifier for machine downtime prediction"
+  inference_instances:
+    - "ml.t2.medium"
+    - "ml.m5.large"
+    - "ml.m5.xlarge"
+  transform_instances:
+    - "ml.m5.large"
+    - "ml.m5.xlarge"
+
+# Compute Instance Types
+instance_types:
+  processing: "ml.m5.large"
+  training: "ml.m5.large"
+  evaluation: "ml.m5.large"
+
+# Instance Counts
+instance_counts:
+  processing: 1
+  training: 1
+  evaluation: 1
+
+# Volume Sizes (in GB)
+volume_sizes:
+  processing: 30
+  training: 30
+  evaluation: 30
+
+# Model Hyperparameters
+hyperparameters:
+  # RandomForest Hyperparameters
+  n_estimators: 200
+  max_depth: 10
+  min_samples_split: 2
+  min_samples_leaf: 1
+  max_features: "sqrt"
+  random_state: 42
+  n_jobs: -1
+  
+  # Training Configuration
+  test_size: 0.2
+  validation_split: 0.2
+
+# Data Processing Configuration
+preprocessing:
+  target_column: "Downtime"
+  date_column: "Date"
+  machine_id_column: "Machine_ID"
+  drop_columns:
+    - "Date"
+    - "Machine_ID"
+  
+  # Feature Engineering
+  create_features:
+    - "Pressure_Differential"
+    - "Vibration_Ratio"
+  
+  # Encoding
+  label_encoding:
+    yes: 1
+    no: 0
+  
+  # Scaling
+  scaling_method: "standard"  # options: standard, minmax, robust
+
+# Evaluation Metrics
+evaluation:
+  metrics:
+    - "accuracy"
+    - "precision"
+    - "recall"
+    - "f1_score"
+    - "roc_auc"
+  
+  threshold: 0.5
+  
+  # Model Quality Gates
+  quality_gates:
+    min_accuracy: 0.80
+    min_f1_score: 0.75
+    min_recall: 0.85
+
+# Pipeline Execution Configuration
+execution:
+  max_parallel_steps: 2
+  retry_attempts: 2
+  timeout_minutes: 120
+
+# AWS Configuration
+aws:
+  region: "us-east-1"
+  sagemaker_role: null  # Will be auto-detected or set at runtime
+  
+# Tags for AWS Resources
+tags:
+  Project: "MachineDowntime"
+  Environment: "Production"
+  ManagedBy: "SageMaker-Pipeline"
+  Owner: "Bharani-Kumar"
+  CostCenter: "ML-Ops"
+
+# Notification Configuration (Optional)
+notifications:
+  enabled: false
+  sns_topic_arn: null  # Set your SNS topic ARN for notifications
+  
+# Monitoring Configuration (Optional)
+monitoring:
+  enable_model_quality_monitoring: true
+  enable_data_quality_monitoring: true
+  monitoring_schedule_frequency: "Daily"
+
+# Feature Store Configuration (Optional - Future Enhancement)
+feature_store:
+  enabled: false
+  feature_group_name: "machine-downtime-features"
